@@ -1,0 +1,54 @@
+namespace ShipmentCalendar.Models;
+
+/// <summary>注文に紐づく工程インスタンス</summary>
+public class OrderProcess
+{
+    public int Id { get; set; }
+    public int OrderId { get; set; }
+    public string ProcessName { get; set; } = string.Empty;
+    /// <summary>指示先番号（工程ごとに一意。完了判定のキーに使用）</summary>
+    public string DestinationCode { get; set; } = string.Empty;
+    /// <summary>着手予定日（開始日）。DueDateより前になる場合がある（1営業日の稼働時間を超える工程）</summary>
+    public DateOnly StartDate { get; set; }
+    public DateOnly DueDate { get; set; }
+    /// <summary>実際の完了日（受入実績の受入日）。完了工程のみセット</summary>
+    public DateOnly? ActualDate { get; set; }
+    /// <summary>この工程の作業者名（V_Userから解決）。完了工程のみセット</summary>
+    public string WorkerName { get; set; } = string.Empty;
+    public ProcessStatus Status { get; set; } = ProcessStatus.NotStarted;
+    public int SortOrder { get; set; }
+    /// <summary>担当部署ID（ProcessDefinitionから引き継ぐ）</summary>
+    public int DepartmentId { get; set; } = 0;
+    /// <summary>必要時間（分）= (段取時間 + 作業時間) × 計画数。0=未設定</summary>
+    public double RequiredMinutes { get; set; } = 0;
+    /// <summary>RequiredMinutesを着手日〜完了日の営業日ごとに割り振った内訳（日付→その日の必要時間・分）。
+    /// 合計はRequiredMinutesと一致する</summary>
+    public Dictionary<DateOnly, double> DailyMinutes { get; set; } = [];
+    /// <summary>この工程の後に発生する外注待ち日数（営業日）。0=外注待ちなし</summary>
+    public int OutsourceLeadDays { get; set; } = 0;
+    /// <summary>この工程の後に発生する固定待機時間（分）。0=滞留時間なし</summary>
+    public double DwellTimeMinutes { get; set; } = 0;
+    /// <summary>完了必須日の何日前から警告状態にするか。0=警告なし</summary>
+    public int WarningDaysBeforeDeadline { get; set; } = 0;
+    /// <summary>V_ReceiptActualの作業時間（分）の合計。同一工程に複数の受入実績がある場合は合計する</summary>
+    public double ActualWorkMinutes { get; set; } = 0;
+
+    /// <summary>必要時間の表示用テキストを返す（showInMinutes=trueなら分表記、falseなら時間表記）</summary>
+    public string GetRequiredTimeDescription(bool showInMinutes) => showInMinutes
+        ? (RequiredMinutes <= 0 ? "0分" : $"{RequiredMinutes:F1}分")
+        : (RequiredMinutes <= 0 ? "0.0h" : $"{RequiredMinutes / 60.0:F1}h");
+
+    /// <summary>実工数の表示用テキストを返す（showInMinutes=trueなら分表記、falseなら時間表記）</summary>
+    public string GetActualWorkTimeDescription(bool showInMinutes) => showInMinutes
+        ? (ActualWorkMinutes <= 0 ? "0分" : $"{ActualWorkMinutes:F1}分")
+        : (ActualWorkMinutes <= 0 ? "0.0h" : $"{ActualWorkMinutes / 60.0:F1}h");
+}
+
+public enum ProcessStatus
+{
+    NotStarted,  // 着手前
+    InProgress,  // 進行中
+    Warning,     // 期限間近
+    Completed,   // 完了
+    Overdue      // 超過
+}

@@ -1,0 +1,140 @@
+using ShipmentCalendar.Models;
+using ShipmentCalendar.Services;
+
+namespace ShipmentCalendar.Repositories;
+
+/// <summary>
+/// ODBC経由でV_ProcessInstruction + V_Supplier から工程定義を取得するリポジトリ。
+/// 旧ビュー版は使用しない。
+/// </summary>
+public class OdbcProcessDefinitionRepository(AppSettings settings) : IOdbcProcessDefinitionRepository {
+    public IEnumerable<ProcessDefinition> GetAll() {
+        using var conn = OdbcConnectionFactory.Create(settings);
+        conn.Open();
+
+        List<ProcessDefinition> definitions = [];
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"SELECT A.品目番号 AS 品目番号, A.指示先番号 AS 指示先番号, A.順序 AS 順序, A.段取時間 AS 段取時間, A.作業時間 AS 作業時間, B.取引先名称 AS 取引先名称
+            FROM V_ProcessInstruction A
+            LEFT JOIN V_Supplier B ON A.指示先番号 = B.取引先番号
+            WHERE A.指示先番号 IS NOT NULL
+              AND A.指示先番号 <> '< NULL >'";
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) {
+            var itemNumber = reader["品目番号"]?.ToString()?.Trim() ?? string.Empty;
+            var destNumber = reader["指示先番号"]?.ToString()?.Trim() ?? string.Empty;
+            if (string.IsNullOrEmpty(itemNumber) || string.IsNullOrEmpty(destNumber)) continue;
+
+            definitions.Add(MapRow(reader, itemNumber, destNumber));
+        }
+
+        return definitions;
+    }
+
+    public IEnumerable<ProcessDefinition> GetByItemNumber(string itemNumber) {
+        if (string.IsNullOrEmpty(itemNumber)) return [];
+
+        using var conn = OdbcConnectionFactory.Create(settings);
+        conn.Open();
+
+        List<ProcessDefinition> definitions = [];
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"SELECT A.指示先番号 AS 指示先番号, A.順序 AS 順序, A.段取時間 AS 段取時間, A.作業時間 AS 作業時間, B.取引先名称 AS 取引先名称
+            FROM V_ProcessInstruction A
+            LEFT JOIN V_Supplier B ON A.指示先番号 = B.取引先番号
+            WHERE A.品目番号 = ?
+              AND A.指示先番号 IS NOT NULL
+              AND A.指示先番号 <> '< NULL >'";
+        cmd.Parameters.Add("@ItemNumber", System.Data.Odbc.OdbcType.VarChar).Value = itemNumber;
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) {
+            var destNumber = reader["指示先番号"]?.ToString()?.Trim() ?? string.Empty;
+            if (string.IsNullOrEmpty(destNumber)) continue;
+
+            definitions.Add(MapRow(reader, itemNumber, destNumber));
+        }
+
+        return definitions;
+    }
+
+    /// <summary>複数の品目番号の工程定義を1回のODBC接続でまとめて取得する（品目番号 → 工程定義一覧）</summary>
+    public IDictionary<string, List<ProcessDefinition>> GetByItemNumbers(IEnumerable<string> itemNumbers) {
+        var items = itemNumbers.Where(i => !string.IsNullOrEmpty(i)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var result = items.ToDictionary(i => i, _ => new List<ProcessDefinition>(), StringComparer.OrdinalIgnoreCase);
+        if (items.Count == 0) return result;
+
+        using var conn = OdbcConnectionFactory.Create(settings);
+        conn.Open();
+
+        // IN句のパラメータ数がODBCドライバの上限を超えないよう、品目番号をバッチに分けてクエリを実行する
+        const int BatchSize = 500;
+        for (int i = 0; i < items.Count; i += BatchSize) {
+            var batch = items.Skip(i).Take(BatchSize).ToList();
+
+            using var cmd = conn.CreateCommand();
+            var placeholders = string.Join(",", batch.Select(_ => "?"));
+            cmd.CommandText = $@"SELECT A.品目番号 AS 品目番号, A.指示先番号 AS 指示先番号, A.順序 AS 順序, A.段取時間 AS 段取時間, A.作業時間 AS 作業時間, B.取引先名称 AS 取引先名称
+                FROM V_ProcessInstruction A
+                LEFT JOIN V_Supplier B ON A.指示先番号 = B.取引先番号
+                WHERE A.品目番号 IN ({placeholders})
+                  AND A.指示先番号 IS NOT NULL
+                  AND A.指示先番号 <> '< NULL >'";
+            foreach (var item in batch)
+                cmd.Parameters.Add("@ItemNumber", System.Data.Odbc.OdbcType.VarChar).Value = item;
+
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) {
+                var itemNumber = reader["品目番号"]?.ToString()?.Trim() ?? string.Empty;
+                var destNumber = reader["指示先番号"]?.ToString()?.Trim() ?? string.Empty;
+                if (!result.ContainsKey(itemNumber) || string.IsNullOrEmpty(destNumber)) continue;
+
+                result[itemNumber].Add(MapRow(reader, itemNumber, destNumber));
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>ODBCの1行分から工程定義を組み立てる（品目番号・指示先番号は呼び出し元で検証済みのものを渡す）</summary>
+    private static ProcessDefinition MapRow(System.Data.Odbc.OdbcDataReader reader, string itemNumber, string destNumber) {
+        _ = int.TryParse(reader["順序"]?.ToString(), out int sortOrder);
+        _ = double.TryParse(reader["段取時間"]?.ToString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double setup);
+        _ = double.TryParse(reader["作業時間"]?.ToString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double work);
+        var supplierName = reader["取引先名称"]?.ToString()?.Trim() ?? string.Empty;
+        var processName = string.IsNullOrEmpty(supplierName) ? destNumber : supplierName;
+
+        return new ProcessDefinition {
+            ItemNumber = itemNumber,
+            ProcessName = processName,
+            DestinationCode = destNumber,
+            SetupTimeMinutes = setup,
+            WorkTimeMinutes = work,
+            SortOrder = sortOrder,
+            IsVisible = true,
+            WarningDaysBeforeDeadline = 0
+        };
+    }
+
+    public IEnumerable<string> GetItemNumbers() {
+        using var conn = OdbcConnectionFactory.Create(settings);
+        conn.Open();
+
+        List<string> itemNumbers = [];
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"SELECT DISTINCT 品目番号
+            FROM V_ProcessInstruction
+            WHERE 品目番号 IS NOT NULL
+            ORDER BY 品目番号";
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) {
+            var item = reader["品目番号"]?.ToString()?.Trim();
+            if (!string.IsNullOrEmpty(item))
+                itemNumbers.Add(item);
+        }
+
+        return itemNumbers;
+    }
+}
