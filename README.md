@@ -69,20 +69,6 @@ ShipmentCalendar.slnx
 └─ ShipmentCalendar.Tests/   単体テスト（xUnit）
 ```
 
-## ビルドと実行
-
-```bash
-dotnet build ShipmentCalendar.slnx
-dotnet run --project ShipmentCalendar
-dotnet test
-```
-
-自己完結型で発行する場合（発行プロファイル `FolderProfile` と同じ設定）:
-
-```bash
-dotnet publish ShipmentCalendar -c Release -r win-x64 --self-contained true
-```
-
 ## 初期設定
 
 初回起動後、リボンの「設定」タブ > 「基本」から次を設定します。
